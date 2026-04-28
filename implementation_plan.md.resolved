@@ -1,0 +1,861 @@
+# Cozzy Marketplace Upgrade — Technical Implementation Plan
+
+## Ringkasan Eksekutif
+
+Upgrade sistem dari **Guest Checkout** → **Registered User Marketplace** dengan fitur: WhatsApp notification, Bulk Actions, Order Timeline, Payment Gateway (Midtrans Snap), PDF Invoice, dan full User/Admin workflow.
+
+> [!IMPORTANT]
+> **Framework Version**: Proyek ini menggunakan **Laravel 10.x** ([composer.json](file:///c:/laragon/www/cozzy/composer.json) → `"laravel/framework": "^10.0"`), bukan Laravel 11. [bootstrap/app.php](file:///c:/laragon/www/cozzy/bootstrap/app.php) menggunakan struktur L10 (Kernel-based). Semua kode di bawah mengikuti konvensi **Laravel 10**.
+
+> [!WARNING]
+> **Breaking Changes**: Tabel [orders](file:///c:/laragon/www/cozzy/app/Http/Controllers/AdminController.php#32-38) akan di-refactor dari guest-only ke user-based. Data order lama (guest) akan perlu di-migrate. Kolom `guest_*` akan di-retain sebagai nullable untuk backward compatibility.
+
+---
+
+## 1. Database Schema
+
+### 1.1 Migration: Alter `users` table
+
+#### [NEW] [add_fields_to_users_table.php](file:///c:/laragon/www/cozzy/database/migrations/2026_04_25_000001_add_fields_to_users_table.php)
+
+```php
+Schema::table('users', function (Blueprint $table) {
+    $table->string('phone', 20)->nullable()->after('email');
+    $table->text('address')->nullable()->after('phone');
+});
+```
+
+### 1.2 Migration: Alter [orders](file:///c:/laragon/www/cozzy/app/Http/Controllers/AdminController.php#32-38) table
+
+#### [NEW] [upgrade_orders_for_marketplace.php](file:///c:/laragon/www/cozzy/database/migrations/2026_04_25_000002_upgrade_orders_for_marketplace.php)
+
+```php
+Schema::table('orders', function (Blueprint $table) {
+    $table->foreignId('user_id')->nullable()->after('id')->constrained()->nullOnDelete();
+    $table->string('order_number', 32)->unique()->after('user_id');
+    $table->string('shipping_address')->nullable()->after('guest_address');
+    $table->string('payment_method')->default('manual')->after('status');
+    $table->string('snap_token')->nullable()->after('payment_method');
+    $table->string('midtrans_order_id')->nullable()->after('snap_token');
+    $table->string('tracking_number')->nullable()->after('midtrans_order_id');
+    $table->string('courier')->nullable()->after('tracking_number');
+    $table->timestamp('paid_at')->nullable()->after('courier');
+    $table->timestamp('shipped_at')->nullable()->after('paid_at');
+    $table->timestamp('completed_at')->nullable()->after('shipped_at');
+
+    // Guest columns tetap nullable untuk backward compatibility
+    $table->string('guest_name')->nullable()->change();
+    $table->string('guest_email')->nullable()->change();
+    $table->text('guest_address')->nullable()->change();
+});
+```
+
+### 1.3 Migration: `carts` table (NEW)
+
+#### [NEW] [create_carts_table.php](file:///c:/laragon/www/cozzy/database/migrations/2026_04_25_000003_create_carts_table.php)
+
+```php
+Schema::create('carts', function (Blueprint $table) {
+    $table->id();
+    $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+    $table->foreignId('product_id')->constrained()->cascadeOnDelete();
+    $table->unsignedInteger('quantity')->default(1);
+    $table->timestamps();
+
+    $table->unique(['user_id', 'product_id']); // 1 row per product per user
+});
+```
+
+### 1.4 Migration: `order_histories` table (NEW)
+
+#### [NEW] [create_order_histories_table.php](file:///c:/laragon/www/cozzy/database/migrations/2026_04_25_000004_create_order_histories_table.php)
+
+```php
+Schema::create('order_histories', function (Blueprint $table) {
+    $table->id();
+    $table->foreignId('order_id')->constrained()->cascadeOnDelete();
+    $table->string('status');             // e.g. Pending, Paid, Packing, Shipped, Completed
+    $table->string('description');        // Human-readable note
+    $table->string('actor')->default('system'); // 'system', 'admin', 'midtrans'
+    $table->timestamps();
+});
+```
+
+### 1.5 ERD (Entity Relationship)
+
+```mermaid
+erDiagram
+    USERS ||--o{ ORDERS : "has many"
+    USERS ||--o{ CARTS : "has many"
+    USERS ||--o{ COMMENTS : "has many"
+    ORDERS ||--|{ ORDER_ITEMS : "has many"
+    ORDERS ||--o{ ORDER_HISTORIES : "has many"
+    PRODUCTS ||--o{ ORDER_ITEMS : "in many"
+    PRODUCTS ||--o{ CARTS : "in many"
+    PRODUCTS ||--o{ COMMENTS : "has many"
+
+    USERS {
+        bigint id PK
+        string name
+        string email UK
+        string phone
+        text address
+        string password
+        timestamp email_verified_at
+    }
+
+    ORDERS {
+        bigint id PK
+        bigint user_id FK
+        string order_number UK
+        string guest_name "nullable-legacy"
+        string guest_phone "nullable-legacy"
+        decimal total_price
+        string status
+        string payment_method
+        string snap_token
+        string tracking_number
+        string courier
+        timestamp paid_at
+        timestamp shipped_at
+        timestamp completed_at
+    }
+
+    CARTS {
+        bigint id PK
+        bigint user_id FK
+        bigint product_id FK
+        int quantity
+    }
+
+    ORDER_HISTORIES {
+        bigint id PK
+        bigint order_id FK
+        string status
+        string description
+        string actor
+    }
+```
+
+---
+
+## 2. Model & Relationship Updates
+
+### [MODIFY] [User.php](file:///c:/laragon/www/cozzy/app/Models/User.php)
+
+```php
+// Tambah $fillable & relationships
+protected $fillable = ['name', 'email', 'password', 'phone', 'address'];
+
+public function orders(): HasMany { return $this->hasMany(Order::class); }
+public function carts(): HasMany { return $this->hasMany(Cart::class); }
+public function comments(): HasMany { return $this->hasMany(Comment::class); }
+```
+
+### [MODIFY] [Order.php](file:///c:/laragon/www/cozzy/app/Models/Order.php)
+
+```php
+protected $fillable = [
+    'user_id', 'order_number', 'guest_name', 'guest_email', 'guest_phone',
+    'guest_address', 'shipping_address', 'total_price', 'status',
+    'payment_method', 'snap_token', 'midtrans_order_id',
+    'tracking_number', 'courier', 'paid_at', 'shipped_at', 'completed_at',
+];
+
+protected $casts = [
+    'paid_at' => 'datetime', 'shipped_at' => 'datetime', 'completed_at' => 'datetime',
+];
+
+public function user(): BelongsTo { return $this->belongsTo(User::class); }
+public function orderItems(): HasMany { return $this->hasMany(OrderItem::class); }
+public function histories(): HasMany { return $this->hasMany(OrderHistory::class)->orderBy('created_at'); }
+
+// Helper: generate unique order number
+public static function generateOrderNumber(): string
+{
+    return 'CZY-' . now()->format('Ymd') . '-' . strtoupper(Str::random(6));
+}
+```
+
+### [NEW] [Cart.php](file:///c:/laragon/www/cozzy/app/Models/Cart.php)
+
+```php
+class Cart extends Model {
+    protected $fillable = ['user_id', 'product_id', 'quantity'];
+
+    public function user(): BelongsTo { return $this->belongsTo(User::class); }
+    public function product(): BelongsTo { return $this->belongsTo(Product::class); }
+}
+```
+
+### [NEW] [OrderHistory.php](file:///c:/laragon/www/cozzy/app/Models/OrderHistory.php)
+
+```php
+class OrderHistory extends Model {
+    protected $fillable = ['order_id', 'status', 'description', 'actor'];
+
+    public function order(): BelongsTo { return $this->belongsTo(Order::class); }
+}
+```
+
+---
+
+## 3. Authentication (User & Admin)
+
+### Strategi
+- **User Auth**: Menggunakan Laravel Breeze (minimal, blade-based). Install via `composer require laravel/breeze --dev && php artisan breeze:install blade`.
+- **Admin Auth**: Custom guard [admin](file:///c:/laragon/www/cozzy/app/Http/Controllers/ProductController.php#28-43) dengan model [Admin](file:///c:/laragon/www/cozzy/app/Models/Admin.php#8-24) (sudah ada).
+
+### [MODIFY] [config/auth.php](file:///c:/laragon/www/cozzy/config/auth.php)
+
+```php
+'guards' => [
+    'web'   => ['driver' => 'session', 'provider' => 'users'],
+    'admin' => ['driver' => 'session', 'provider' => 'admins'],
+],
+'providers' => [
+    'users'  => ['driver' => 'eloquent', 'model' => App\Models\User::class],
+    'admins' => ['driver' => 'eloquent', 'model' => App\Models\Admin::class],
+],
+```
+
+### [NEW] [AdminLoginController.php](file:///c:/laragon/www/cozzy/app/Http/Controllers/Admin/AdminLoginController.php)
+
+Handles admin login/logout menggunakan `Auth::guard('admin')`.
+
+### Route Protection
+
+```php
+// routes/web.php
+Route::prefix('admin')->middleware('auth:admin')->group(function () {
+    // ... semua admin routes
+});
+```
+
+---
+
+## 4. Cart System (User Side)
+
+### [NEW] [CartController.php](file:///c:/laragon/www/cozzy/app/Http/Controllers/CartController.php)
+
+| Method | Route | Deskripsi |
+|--------|-------|-----------|
+| [index()](file:///c:/laragon/www/cozzy/app/Http/Controllers/ProductController.php#12-18) | `GET /cart` | Tampilkan isi keranjang |
+| [store()](file:///c:/laragon/www/cozzy/app/Http/Controllers/ProductController.php#50-78) | `POST /cart/add` | Tambah item (upsert quantity) |
+| [update()](file:///c:/laragon/www/cozzy/app/Http/Controllers/ProductController.php#86-119) | `PATCH /cart/{id}` | Update quantity |
+| [destroy()](file:///c:/laragon/www/cozzy/app/Http/Controllers/ProductController.php#120-131) | `DELETE /cart/{id}` | Hapus item dari cart |
+
+```php
+// Contoh: Atomic Upsert
+public function store(Request $request)
+{
+    $request->validate(['product_id' => 'required|exists:products,id', 'quantity' => 'required|integer|min:1']);
+
+    Cart::updateOrCreate(
+        ['user_id' => auth()->id(), 'product_id' => $request->product_id],
+        ['quantity' => DB::raw("quantity + {$request->quantity}")]
+    );
+
+    return back()->with('success', 'Produk ditambahkan ke keranjang!');
+}
+```
+
+---
+
+## 5. Checkout System (Multi-Item + Midtrans)
+
+### [NEW] [CheckoutController.php](file:///c:/laragon/www/cozzy/app/Http/Controllers/CheckoutController.php) (Refactor)
+
+**Alur Checkout:**
+1. User klik "Checkout" dari cart → tampilkan review page
+2. User konfirmasi → create Order + OrderItems atomically
+3. Panggil Midtrans Snap API → dapatkan `snap_token`
+4. Redirect user ke Midtrans payment page
+5. Midtrans callback/notification → update status ke "Paid"
+
+```php
+public function process(Request $request)
+{
+    $user = auth()->user();
+    $cartItems = Cart::where('user_id', $user->id)->with('product')->get();
+
+    if ($cartItems->isEmpty()) {
+        return back()->with('error', 'Keranjang kosong.');
+    }
+
+    DB::beginTransaction();
+    try {
+        $totalPrice = 0;
+        $orderNumber = Order::generateOrderNumber();
+
+        $order = Order::create([
+            'user_id'          => $user->id,
+            'order_number'     => $orderNumber,
+            'shipping_address' => $request->shipping_address ?? $user->address,
+            'total_price'      => 0,
+            'status'           => 'Pending',
+            'payment_method'   => 'midtrans',
+        ]);
+
+        foreach ($cartItems as $item) {
+            $product = Product::where('id', $item->product_id)->lockForUpdate()->first();
+
+            if ($product->stock < $item->quantity) {
+                throw new \Exception("Stok {$product->name} tidak cukup.");
+            }
+
+            OrderItem::create([
+                'order_id'   => $order->id,
+                'product_id' => $product->id,
+                'quantity'   => $item->quantity,
+                'price'      => $product->price,
+            ]);
+
+            $product->decrement('stock', $item->quantity);
+            $totalPrice += $product->price * $item->quantity;
+        }
+
+        $order->update(['total_price' => $totalPrice]);
+
+        // Log order history
+        OrderHistory::create([
+            'order_id'    => $order->id,
+            'status'      => 'Pending',
+            'description' => 'Pesanan dibuat, menunggu pembayaran.',
+            'actor'       => 'system',
+        ]);
+
+        // Midtrans Snap Token
+        $snapToken = $this->createMidtransTransaction($order);
+        $order->update(['snap_token' => $snapToken, 'midtrans_order_id' => $orderNumber]);
+
+        // Clear cart
+        Cart::where('user_id', $user->id)->delete();
+
+        DB::commit();
+
+        return view('store.payment', compact('order', 'snapToken'));
+
+    } catch (\Exception $e) {
+        DB::rollBack();
+        return back()->with('error', $e->getMessage());
+    }
+}
+```
+
+---
+
+## 6. Midtrans Integration
+
+### Setup
+
+```bash
+composer require midtrans/midtrans-php
+```
+
+### [MODIFY] [.env](file:///c:/laragon/www/cozzy/.env)
+
+```env
+MIDTRANS_SERVER_KEY=SB-Mid-server-xxxx
+MIDTRANS_CLIENT_KEY=SB-Mid-client-xxxx
+MIDTRANS_IS_PRODUCTION=false
+MIDTRANS_MERCHANT_ID=G00xxxx
+```
+
+### [NEW] [config/midtrans.php](file:///c:/laragon/www/cozzy/config/midtrans.php)
+
+```php
+return [
+    'server_key'    => env('MIDTRANS_SERVER_KEY'),
+    'client_key'    => env('MIDTRANS_CLIENT_KEY'),
+    'is_production' => env('MIDTRANS_IS_PRODUCTION', false),
+    'merchant_id'   => env('MIDTRANS_MERCHANT_ID'),
+];
+```
+
+### [NEW] [MidtransService.php](file:///c:/laragon/www/cozzy/app/Services/MidtransService.php)
+
+```php
+namespace App\Services;
+
+use Midtrans\Config;
+use Midtrans\Snap;
+use App\Models\Order;
+
+class MidtransService
+{
+    public function __construct()
+    {
+        Config::$serverKey    = config('midtrans.server_key');
+        Config::$isProduction = config('midtrans.is_production');
+        Config::$isSanitized  = true;
+        Config::$is3ds        = true;
+    }
+
+    public function createSnapToken(Order $order): string
+    {
+        $params = [
+            'transaction_details' => [
+                'order_id'     => $order->order_number,
+                'gross_amount' => (int) $order->total_price,
+            ],
+            'customer_details' => [
+                'first_name' => $order->user->name,
+                'email'      => $order->user->email,
+                'phone'      => $order->user->phone,
+            ],
+            'item_details' => $order->orderItems->map(fn($item) => [
+                'id'       => $item->product_id,
+                'price'    => (int) $item->price,
+                'quantity' => $item->quantity,
+                'name'     => substr($item->product->name, 0, 50),
+            ])->toArray(),
+        ];
+
+        return Snap::getSnapToken($params);
+    }
+}
+```
+
+### [NEW] [MidtransCallbackController.php](file:///c:/laragon/www/cozzy/app/Http/Controllers/MidtransCallbackController.php)
+
+```php
+// POST /midtrans/callback (webhook - no auth)
+public function handle(Request $request)
+{
+    $serverKey = config('midtrans.server_key');
+    $signatureKey = hash('sha512',
+        $request->order_id . $request->status_code .
+        $request->gross_amount . $serverKey
+    );
+
+    if ($signatureKey !== $request->signature_key) {
+        return response()->json(['message' => 'Invalid signature'], 403);
+    }
+
+    $order = Order::where('midtrans_order_id', $request->order_id)->firstOrFail();
+
+    if (in_array($request->transaction_status, ['capture', 'settlement'])) {
+        DB::transaction(function () use ($order) {
+            $order->update(['status' => 'Paid', 'paid_at' => now()]);
+            OrderHistory::create([
+                'order_id'    => $order->id,
+                'status'      => 'Paid',
+                'description' => 'Pembayaran berhasil via Midtrans.',
+                'actor'       => 'midtrans',
+            ]);
+
+            // Generate PDF Invoice & kirim WA
+            $pdfUrl = app(InvoiceService::class)->generate($order);
+            app(WhatsappService::class)->sendPaymentConfirmation($order, $pdfUrl);
+        });
+    }
+    // Handle: expire, deny, cancel → rollback stock
+    elseif (in_array($request->transaction_status, ['expire', 'deny', 'cancel'])) {
+        DB::transaction(function () use ($order) {
+            $order->update(['status' => 'Cancelled']);
+            foreach ($order->orderItems as $item) {
+                $item->product->increment('stock', $item->quantity);
+            }
+            OrderHistory::create([
+                'order_id'    => $order->id,
+                'status'      => 'Cancelled',
+                'description' => 'Pembayaran dibatalkan/expired.',
+                'actor'       => 'midtrans',
+            ]);
+        });
+    }
+
+    return response()->json(['message' => 'OK']);
+}
+```
+
+---
+
+## 7. WhatsApp API Integration (Fonnte)
+
+### [MODIFY] [.env](file:///c:/laragon/www/cozzy/.env)
+
+```env
+FONNTE_API_TOKEN=your_fonnte_token_here
+FONNTE_API_URL=https://api.fonnte.com/send
+```
+
+### [NEW] [WhatsappService.php](file:///c:/laragon/www/cozzy/app/Services/WhatsappService.php)
+
+```php
+namespace App\Services;
+
+use App\Models\Order;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+
+class WhatsappService
+{
+    protected string $apiUrl;
+    protected string $token;
+
+    public function __construct()
+    {
+        $this->apiUrl = config('services.fonnte.url', 'https://api.fonnte.com/send');
+        $this->token  = config('services.fonnte.token');
+    }
+
+    /**
+     * Kirim notifikasi saat status → Shipped
+     */
+    public function sendShippedNotification(Order $order): bool
+    {
+        $phone   = $order->user->phone ?? $order->guest_phone;
+        $name    = $order->user->name ?? $order->guest_name;
+        $message = $this->buildShippedMessage($order, $name);
+
+        return $this->send($phone, $message);
+    }
+
+    /**
+     * Kirim konfirmasi pembayaran + link PDF invoice
+     */
+    public function sendPaymentConfirmation(Order $order, string $invoiceUrl): bool
+    {
+        $phone   = $order->user->phone ?? $order->guest_phone;
+        $name    = $order->user->name ?? $order->guest_name;
+
+        $message = "✅ *PEMBAYARAN BERHASIL*\n\n"
+            . "Halo {$name},\n"
+            . "Pembayaran untuk pesanan *{$order->order_number}* telah dikonfirmasi.\n\n"
+            . "💰 Total: Rp " . number_format($order->total_price, 0, ',', '.') . "\n\n"
+            . "📄 Download Invoice:\n{$invoiceUrl}\n\n"
+            . "Pesanan Anda segera diproses! 🎉\n"
+            . "— *Cozzy.co*";
+
+        return $this->send($phone, $message);
+    }
+
+    private function buildShippedMessage(Order $order, string $name): string
+    {
+        return "📦 *PESANAN DIKIRIM*\n\n"
+            . "Halo {$name},\n"
+            . "Pesanan *{$order->order_number}* telah dikirim!\n\n"
+            . "🚚 Kurir: {$order->courier}\n"
+            . "📋 No. Resi: {$order->tracking_number}\n\n"
+            . "Terima kasih sudah belanja di *Cozzy.co*! 🛍️";
+    }
+
+    private function send(string $phone, string $message): bool
+    {
+        if (empty($phone) || empty($this->token)) {
+            Log::warning('WA send skipped: missing phone or token.');
+            return false;
+        }
+
+        try {
+            $response = Http::withHeaders([
+                'Authorization' => $this->token,
+            ])->post($this->apiUrl, [
+                'target'  => $phone,
+                'message' => $message,
+            ]);
+
+            Log::info('WA sent', ['phone' => $phone, 'status' => $response->status()]);
+            return $response->successful();
+        } catch (\Exception $e) {
+            Log::error('WA send failed', ['error' => $e->getMessage()]);
+            return false;
+        }
+    }
+}
+```
+
+### [MODIFY] [config/services.php](file:///c:/laragon/www/cozzy/config/services.php)
+
+```php
+'fonnte' => [
+    'token' => env('FONNTE_API_TOKEN'),
+    'url'   => env('FONNTE_API_URL', 'https://api.fonnte.com/send'),
+],
+```
+
+---
+
+## 8. Bulk Status Update (Admin)
+
+### Technical Workflow: Klik "Shipped" → WA Terkirim
+
+```mermaid
+sequenceDiagram
+    participant Admin
+    participant Server as AdminController
+    participant DB as Database
+    participant WA as WhatsappService
+    participant Buyer as Pembeli (WA)
+
+    Admin->>Server: POST /admin/orders/bulk-update {ids[], status, courier, tracking}
+    Server->>DB: BEGIN TRANSACTION
+    loop setiap order_id
+        Server->>DB: UPDATE orders SET status, tracking, shipped_at
+        Server->>DB: INSERT order_histories
+        alt status == 'Shipped'
+            Server->>WA: sendShippedNotification(order)
+            WA->>Buyer: 📦 Pesan WA (kurir + resi)
+        end
+    end
+    Server->>DB: COMMIT
+    Server->>Admin: Response success (n orders updated)
+```
+
+### [MODIFY] [AdminController.php](file:///c:/laragon/www/cozzy/app/Http/Controllers/AdminController.php)
+
+```php
+use App\Services\WhatsappService;
+
+/**
+ * Bulk Update Order Status — Atomic Transaction
+ */
+public function bulkUpdateStatus(Request $request, WhatsappService $waService)
+{
+    $request->validate([
+        'order_ids'       => 'required|array|min:1',
+        'order_ids.*'     => 'exists:orders,id',
+        'status'          => 'required|in:Pending,Paid,Packing,Shipped,Completed',
+        'courier'         => 'nullable|required_if:status,Shipped|string',
+        'tracking_number' => 'nullable|required_if:status,Shipped|string',
+    ]);
+
+    $updated = 0;
+    $failed  = [];
+
+    DB::beginTransaction();
+    try {
+        $orders = Order::whereIn('id', $request->order_ids)->lockForUpdate()->get();
+
+        foreach ($orders as $order) {
+            $data = ['status' => $request->status];
+
+            if ($request->status === 'Shipped') {
+                $data['courier']         = $request->courier;
+                $data['tracking_number'] = $request->tracking_number;
+                $data['shipped_at']      = now();
+            } elseif ($request->status === 'Completed') {
+                $data['completed_at'] = now();
+            }
+
+            $order->update($data);
+
+            OrderHistory::create([
+                'order_id'    => $order->id,
+                'status'      => $request->status,
+                'description' => "Status diubah ke {$request->status} oleh Admin.",
+                'actor'       => 'admin',
+            ]);
+
+            // Kirim WA otomatis saat Shipped
+            if ($request->status === 'Shipped') {
+                $waService->sendShippedNotification($order->load('user'));
+            }
+
+            $updated++;
+        }
+
+        DB::commit();
+        return back()->with('success', "{$updated} pesanan berhasil diupdate ke status {$request->status}.");
+
+    } catch (\Exception $e) {
+        DB::rollBack();
+        Log::error('Bulk update failed', ['error' => $e->getMessage()]);
+        return back()->with('error', 'Gagal update: ' . $e->getMessage());
+    }
+}
+```
+
+### Route Baru
+
+```php
+Route::post('/admin/orders/bulk-update', [AdminController::class, 'bulkUpdateStatus'])
+    ->name('admin.orders.bulkUpdate');
+```
+
+---
+
+## 9. PDF Invoice (DomPDF)
+
+### Setup
+
+```bash
+composer require barryvdh/laravel-dompdf
+```
+
+### [NEW] [InvoiceService.php](file:///c:/laragon/www/cozzy/app/Services/InvoiceService.php)
+
+```php
+namespace App\Services;
+
+use App\Models\Order;
+use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Support\Facades\Storage;
+
+class InvoiceService
+{
+    /**
+     * Generate PDF invoice, simpan ke storage, return public URL
+     */
+    public function generate(Order $order): string
+    {
+        $order->load(['user', 'orderItems.product']);
+
+        $pdf = Pdf::loadView('pdf.invoice', compact('order'))
+            ->setPaper('a4', 'portrait');
+
+        $filename = "invoices/INV-{$order->order_number}.pdf";
+        Storage::disk('public')->put($filename, $pdf->output());
+
+        return asset("storage/{$filename}");
+    }
+}
+```
+
+### [NEW] [resources/views/pdf/invoice.blade.php](file:///c:/laragon/www/cozzy/resources/views/pdf/invoice.blade.php)
+
+Template invoice profesional berisi: header Cozzy.co, data pembeli, tabel item, total, dan footer.
+
+### Route Download
+
+```php
+Route::get('/invoice/{order}', [OrderController::class, 'downloadInvoice'])
+    ->name('invoice.download')->middleware('auth');
+```
+
+---
+
+## 10. User-Side Routes & Controllers
+
+### [NEW] [OrderController.php](file:///c:/laragon/www/cozzy/app/Http/Controllers/OrderController.php)
+
+| Method | Route | Deskripsi |
+|--------|-------|-----------|
+| [index()](file:///c:/laragon/www/cozzy/app/Http/Controllers/ProductController.php#12-18) | `GET /orders` | Daftar pesanan user |
+| [show($id)](file:///c:/laragon/www/cozzy/app/Http/Controllers/ProductController.php#19-25) | `GET /orders/{id}` | Detail + timeline |
+| `downloadInvoice($id)` | `GET /invoice/{id}` | Download PDF |
+
+### Routes Summary (Updated)
+
+```php
+// === PUBLIC (Guest) ===
+Route::get('/', [ProductController::class, 'index'])->name('katalog');
+Route::get('/product/{slug}', [ProductController::class, 'show'])->name('product.detail');
+
+// === AUTHENTICATED USER ===
+Route::middleware('auth')->group(function () {
+    Route::get('/cart', [CartController::class, 'index'])->name('cart.index');
+    Route::post('/cart/add', [CartController::class, 'store'])->name('cart.store');
+    Route::patch('/cart/{id}', [CartController::class, 'update'])->name('cart.update');
+    Route::delete('/cart/{id}', [CartController::class, 'destroy'])->name('cart.destroy');
+
+    Route::get('/checkout', [CheckoutController::class, 'index'])->name('checkout.index');
+    Route::post('/checkout', [CheckoutController::class, 'process'])->name('checkout.process');
+
+    Route::get('/orders', [OrderController::class, 'index'])->name('orders.index');
+    Route::get('/orders/{id}', [OrderController::class, 'show'])->name('orders.show');
+    Route::get('/invoice/{order}', [OrderController::class, 'downloadInvoice'])->name('invoice.download');
+
+    Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
+    Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
+});
+
+// === MIDTRANS WEBHOOK (no auth) ===
+Route::post('/midtrans/callback', [MidtransCallbackController::class, 'handle'])
+    ->name('midtrans.callback');
+
+// === ADMIN (auth:admin guard) ===
+Route::prefix('admin')->middleware('auth:admin')->group(function () {
+    // Dashboard, Orders, Products, Comments, Settings, Bulk Update...
+    Route::post('/orders/bulk-update', [AdminController::class, 'bulkUpdateStatus'])
+        ->name('admin.orders.bulkUpdate');
+});
+```
+
+---
+
+## 11. File Structure (New/Modified)
+
+```
+app/
+├── Http/Controllers/
+│   ├── Admin/
+│   │   └── AdminLoginController.php        [NEW]
+│   ├── AdminController.php                 [MODIFY] +bulkUpdateStatus
+│   ├── CartController.php                  [NEW]
+│   ├── CheckoutController.php              [MODIFY] multi-item + Midtrans
+│   ├── MidtransCallbackController.php      [NEW]
+│   ├── OrderController.php                 [NEW]
+│   └── ProductController.php               [MODIFY]
+├── Models/
+│   ├── Cart.php                            [NEW]
+│   ├── Comment.php                         [MODIFY] +user_id
+│   ├── Order.php                           [MODIFY] +user relation
+│   ├── OrderHistory.php                    [NEW]
+│   ├── OrderItem.php                       (no change)
+│   ├── Product.php                         (no change)
+│   └── User.php                            [MODIFY] +phone, address, relations
+├── Services/
+│   ├── InvoiceService.php                  [NEW]
+│   ├── MidtransService.php                 [NEW]
+│   └── WhatsappService.php                 [NEW]
+config/
+│   ├── auth.php                            [MODIFY]
+│   ├── midtrans.php                        [NEW]
+│   └── services.php                        [MODIFY]
+database/migrations/
+│   ├── ...add_fields_to_users_table        [NEW]
+│   ├── ...upgrade_orders_for_marketplace   [NEW]
+│   ├── ...create_carts_table               [NEW]
+│   └── ...create_order_histories_table     [NEW]
+resources/views/
+│   ├── pdf/invoice.blade.php               [NEW]
+│   ├── store/cart.blade.php                [NEW]
+│   ├── store/payment.blade.php             [NEW]
+│   ├── store/orders/index.blade.php        [NEW]
+│   ├── store/orders/show.blade.php         [NEW]
+│   └── admin/orders/index.blade.php        [MODIFY] +checkboxes +bulk form
+```
+
+---
+
+## 12. Packages to Install
+
+```bash
+composer require laravel/breeze --dev     # User auth scaffolding
+composer require midtrans/midtrans-php    # Payment gateway
+composer require barryvdh/laravel-dompdf  # PDF invoice generation
+```
+
+---
+
+## 13. Implementation Order (Fase)
+
+| Fase | Scope | Estimasi |
+|------|-------|----------|
+| **1** | Migrations + Models + Relationships | 1 sesi |
+| **2** | User Auth (Breeze) + Admin Auth Guard | 1 sesi |
+| **3** | Cart System (CRUD) + Views | 1 sesi |
+| **4** | Refactor Checkout (multi-item + atomic) | 1 sesi |
+| **5** | Midtrans Integration (Snap + Callback) | 1-2 sesi |
+| **6** | Order Timeline (order_histories + views) | 1 sesi |
+| **7** | WhatsApp Service (Fonnte) + Bulk Actions | 1 sesi |
+| **8** | PDF Invoice (DomPDF) | 1 sesi |
+| **9** | Admin Dashboard KPI Refresh + UI Polish | 1 sesi |
+
+---
+
+## 14. Verification Plan
+
+### Automated Tests
+- `php artisan test` — setelah setiap fase
+- `php artisan migrate:fresh --seed` — verify schema integrity
+
+### Manual Verification
+1. Register user → login → add to cart → checkout → Midtrans payment
+2. Admin bulk update status → verify WA message sent
+3. Midtrans callback → verify PDF generated & WA sent
+4. User profile → verify order timeline display
+5. Browser test admin orders page → verify checkboxes & bulk action form

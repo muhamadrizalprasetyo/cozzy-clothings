@@ -17,7 +17,8 @@ class RouteServiceProvider extends ServiceProvider
      *
      * @var string
      */
-    public const HOME = '/home';
+    // Redirect path after login for the user side. Point to existing user orders page.
+    public const HOME = '/my-orders';
 
     /**
      * Define your route model bindings, pattern filters, and other route configuration.

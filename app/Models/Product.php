@@ -17,6 +17,7 @@ class Product extends Model
         'price',
         'stock',
         'image',
+        'is_active',
     ];
 
     public function orderItems(): HasMany
@@ -27,5 +28,10 @@ class Product extends Model
     public function comments(): HasMany
     {
         return $this->hasMany(Comment::class);
+    }
+
+    public function carts(): HasMany
+    {
+        return $this->hasMany(Cart::class);
     }
 }

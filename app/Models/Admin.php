@@ -13,6 +13,8 @@ class Admin extends Authenticatable
         'name',
         'email',
         'password',
+        'shop_name',
+        'contact_wa',
     ];
 
     protected $hidden = [

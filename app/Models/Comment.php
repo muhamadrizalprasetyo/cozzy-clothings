@@ -11,6 +11,7 @@ class Comment extends Model
     use HasFactory;
 
     protected $fillable = [
+        'user_id',
         'product_id',
         'guest_name',
         'content',
@@ -20,5 +21,10 @@ class Comment extends Model
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class);
+    }
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
     }
 }

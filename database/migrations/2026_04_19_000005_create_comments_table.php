@@ -11,9 +11,9 @@ return new class extends Migration
         Schema::create('comments', function (Blueprint $table) {
             $table->id();
             $table->foreignId('product_id')->constrained('products')->cascadeOnDelete();
-            $table->string('guest_name');
+            $table->string('guest_name')->nullable();
             $table->text('content');
-            $table->boolean('is_approved')->default(true);
+            $table->boolean('is_approved')->default(false);
             $table->timestamps();
         });
     }
