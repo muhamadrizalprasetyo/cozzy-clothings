@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="logo.JPG" alt="Cozzy Logo" width="180" style="margin-bottom: 20px;">
+<img src="logo.JPG" alt="Cozzy Logo" width="250" style="margin-bottom: 300px;">
 
 **Premium Clothing Distro Platform with Virtual Wallet Integration**
 
