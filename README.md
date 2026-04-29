@@ -1,66 +1,37 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+<div align="center">
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+<img src="logo.JPG" alt="Cozzy Logo" width="180" style="margin-bottom: 20px;">
 
-## About Laravel
+**Premium Clothing Distro Platform with Virtual Wallet Integration**
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+[![Laravel](https://img.shields.io/badge/Laravel_10-FF2D20?style=for-the-badge&logo=laravel&logoColor=white)](https://laravel.com)
+[![PHP](https://img.shields.io/badge/PHP_8.1-777BB4?style=for-the-badge&logo=php&logoColor=white)](https://www.php.net/)
+[![TailwindCSS](https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)](https://tailwindcss.com)
+[![MySQL](https://img.shields.io/badge/MySQL-4479A1?style=for-the-badge&logo=mysql&logoColor=white)](https://www.mysql.com/)
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+</div>
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+---
 
-## Learning Laravel
+## Tentang Proyek
+**Cozzy** adalah platform e-commerce yang dirancang khusus untuk memenuhi kebutuhan operasional distro pakaian premium. Sistem ini menonjolkan desain *user interface* yang minimalis serta mengimplementasikan simulasi transaksi mandiri (E-Wallet) tanpa bergantung pada *payment gateway* eksternal.
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+---
 
-You may also try the [Laravel Bootcamp](https://bootcamp.laravel.com), where you will be guided through building a modern Laravel application from scratch.
+## Fitur Unggulan (Komprehensif)
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains over 2000 video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+Sistem ini dibagi menjadi dua modul utama dengan fungsionalitas penuh:
 
-## Laravel Sponsors
+### Modul Pengguna (User Storefront)
+* **Cozzy Cash (Virtual Wallet)**: Sistem E-Wallet terintegrasi di mana setiap pengguna baru otomatis mendapatkan saldo *dummy* sebesar **Rp 1.000.000** untuk transaksi instan.
+* **Dynamic Cart Engine**: Sistem keranjang belanja dengan *real-time badge notification* di *sticky navbar*.
+* **Seamless & Secure Checkout**: Proses pembayaran menggunakan validasi saldo otomatis. Menerapkan perlindungan **Atomic Database Transactions** (`DB::beginTransaction()`) untuk mencegah anomali data stok dan saldo saat transaksi bersamaan.
+* **Order Tracking & History**: Halaman "My Orders" untuk melacak status pesanan (Pending, Paid, Shipped, Completed) lengkap dengan *invoice* visual.
+* **Responsive Premium UI**: Antarmuka *mobile-friendly* yang dibangun murni dengan Tailwind CSS, menampilkan katalog produk (T-shirt & Hoodie) dengan tata letak minimalis dan elegan.
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the Laravel [Patreon page](https://patreon.com/taylorotwell).
-
-### Premium Partners
-
-- **[Vehikl](https://vehikl.com/)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Cubet Techno Labs](https://cubettech.com)**
-- **[Cyber-Duck](https://cyber-duck.co.uk)**
-- **[Many](https://www.many.co.uk)**
-- **[Webdock, Fast VPS Hosting](https://www.webdock.io/en)**
-- **[DevSquad](https://devsquad.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel/)**
-- **[OP.GG](https://op.gg)**
-- **[WebReinvent](https://webreinvent.com/?utm_source=laravel&utm_medium=github&utm_campaign=patreon-sponsors)**
-- **[Lendio](https://lendio.com)**
-
-## Contributing
-
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
-
-## Code of Conduct
-
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
-
-## Security Vulnerabilities
-
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
-
-## License
-
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+### Modul Administrator (Admin Dashboard)
+* **Centralized Dashboard**: Panel kontrol utama untuk memantau ringkasan pesanan, pendapatan, dan metrik toko lainnya.
+* **Product Management (CRUD)**: Fungsionalitas penuh untuk menambah, mengedit, dan menghapus data produk, lengkap dengan pemetaan *path* gambar terstruktur (`public/img/products/`).
+* **Order Fulfillment Management**: Fitur pemrosesan pesanan terpusat untuk memverifikasi transaksi pelanggan.
+* **Batch Action (Bulk Shipped)**: Fitur efisiensi operasional tingkat lanjut yang memungkinkan admin memperbarui status puluhan pesanan menjadi "Shipped" secara bersamaan melalui sistem *checkbox*.
+* **Automated Notification Gateway** *(Placeholder)*: Alur logika sistem yang sudah disiapkan untuk mengirimkan notifikasi resi otomatis via API WhatsApp ketika pesanan dikirim.
